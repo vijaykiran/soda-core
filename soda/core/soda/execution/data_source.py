@@ -64,15 +64,6 @@ class DataSource:
     TEXT_TYPES_FOR_PROFILING = ["character varying", "varchar"]
 
     @staticmethod
-    def camel_case_data_source_type(data_source_type: str) -> str:
-        if "bigquery" == data_source_type:
-            return "BigQuery"
-        elif "spark_df" == data_source_type:
-            return "SparkDf"
-        else:
-            return f"{data_source_type[0:1].upper()}{data_source_type[1:]}"
-
-    @staticmethod
     def create(
         logs: Logs,
         data_source_name: str,
@@ -87,7 +78,7 @@ class DataSource:
         try:
             data_source_properties["connection_type"] = data_source_type
             module = importlib.import_module(f"soda.data_sources.{data_source_type}_data_source")
-            data_source_class = f"{DataSource.camel_case_data_source_type(data_source_type)}DataSource"
+            data_source_class = f"{DataSource.default_casify_datasource_type()}DataSource"
             class_ = getattr(module, data_source_class)
             return class_(logs, data_source_name, data_source_properties)
         except ModuleNotFoundError as e:
@@ -823,6 +814,10 @@ class DataSource:
 
     def rollback(self):
         self.connection.rollback()
+
+    def default_casify_datasource_type(self) -> str:
+        """Most common official format of the data source type name.."""
+        return self.type.capitalize()
 
     def default_casify_table_name(self, identifier: str) -> str:
         """Formats table identifier to e.g. a default case for a given data source."""

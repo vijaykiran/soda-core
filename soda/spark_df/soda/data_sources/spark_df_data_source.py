@@ -29,6 +29,9 @@ class SparkDfDataSource(SparkSQLBase):
         DataType.BOOLEAN: "boolean",
     }
 
+    def default_casify_datasource_type(self) -> str:
+        return "SparkDf"
+
     def __init__(self, logs: Logs, data_source_name: str, data_source_properties: dict):
         super().__init__(logs, data_source_name, data_source_properties)
         self.spark_session = data_source_properties.get("spark_session")
