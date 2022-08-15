@@ -5,6 +5,7 @@ from functools import reduce
 from operator import or_
 from pathlib import Path
 from typing import Any, Optional
+from unicodedata import name
 
 from dbt.contracts.graph.compiled import (
     CompiledModelNode,
@@ -20,6 +21,8 @@ from dbt.contracts.graph.parsed import (
 from dbt.contracts.results import RunResultOutput
 from dbt.node_types import NodeType
 from soda.cloud.dbt_config import DbtCloudConfig
+from soda.execution.check.check import Check
+from soda.execution.check_outcome import CheckOutcome
 from soda.scan import Scan
 from soda.soda_cloud.soda_cloud import SodaCloud
 import json
@@ -27,6 +30,9 @@ from typing import Iterator
 from soda.model.dataset import Dataset
 from requests.structures import CaseInsensitiveDict
 import requests
+
+from soda.execution.check.dbt_check import DbtCheck
+from soda.sodacl.dbt_check_cfg import DbtCheckCfg
 
 
 class DbtCloud:
@@ -54,7 +60,7 @@ class DbtCloud:
         return_code = 0
 
         if self.dbt_artifacts or self.dbt_manifest or self.dbt_run_results:
-            self.scan._logs.info("Using local dbt artifacts.")
+            self.scan._logs.info("Ingesting local dbt artifacts.")
 
             if self.dbt_artifacts:
                 dbt_manifest = self.dbt_artifacts / "manifest.json"
@@ -76,6 +82,7 @@ class DbtCloud:
                 dbt_run_results,
             )
         else:
+            # TODO: test cloud !!!
             self.scan._logs.info("Getting dbt artifacts from dbt Cloud.")
 
             error_values = [self.dbt_cloud_config.api_token, self.dbt_cloud_config.account_id]
@@ -98,18 +105,45 @@ class DbtCloud:
                 self.dbt_cloud_job_id,
             )
 
-        test_results_iterator = self._map_dbt_test_results_iterator(manifest, run_results)
+        check_results_iterator = self._map_dbt_test_results_iterator(manifest, run_results)
 
         self.flush_test_results(
-            test_results_iterator,
-            soda_server_client,
-            warehouse_name=warehouse_yml.name,
-            warehouse_type=warehouse_yml.dialect.type,
+            check_results_iterator,
+            self.scan._configuration.soda_cloud,
         )
 
         return return_code
 
+    def flush_test_results(
+        self,
+        check_results_iterator: Iterator[tuple[Dataset, list[Check]]],
+        soda_cloud: SodaCloud,
+        *,
+        warehouse_name: str,
+        warehouse_type: str,
+    ) -> None:
+        data_source_name = self.scan._data_source_name
+        data_source_type = self.scan._configuration.data_source_properties_by_name[self.scan._data_source_name]["type"]
+        for dataset, checks in check_results_iterator:
+            test_results_jsons = [check.to_dict() for check in checks]
+            if len(test_results_jsons) == 0:
+                continue
+
+            # start_scan_response = soda_cloud.scan_start(
+            #     warehouse_name=warehouse_name,
+            #     warehouse_type=warehouse_type,
+            #     warehouse_database_name=table.database,
+            #     warehouse_database_schema=table.schema,
+            #     table_name=table.name,
+            #     scan_yml_columns=None,
+            #     scan_time=dt.datetime.utcnow().isoformat(),
+            #     origin=os.environ.get("SODA_SCAN_ORIGIN", "external"),
+            # )
+            # soda_cloud.scan_test_results(start_scan_response["scanReference"], test_results_jsons)
+            # soda_cloud.scan_ended(start_scan_response["scanReference"])
+
     def _load_dbt_artifacts(
+        self,
         manifest_file: Path,
         run_results_file: Path,
     ) -> tuple[dict, dict]:
@@ -134,77 +168,67 @@ class DbtCloud:
 
     def _map_dbt_test_results_iterator(
         self, manifest: dict, run_results: dict
-    ) -> Iterator[tuple[Dataset, list[TestResult]]]:
-        """
-        Create an iterator for the dbt test results.
-
-        Parameters
-        ----------
-        manifest : dict
-            The manifest.
-        run_results : dict
-            The run results
-
-        Returns
-        -------
-        out : Iterator[tuple[Table, list[TestResult]]]
-            The table and its corresponding test results.
-        """
+    ) -> Iterator[tuple[Dataset, list[DbtCheck]]]:
         model_nodes, seed_nodes, test_nodes, source_nodes = self._parse_manifest(manifest)
         parsed_run_results = self._parse_run_results(run_results)
 
-        tests_with_test_result = self._map_dbt_run_result_to_test_result(test_nodes, parsed_run_results)
-
         model_seed_and_source_nodes = {**model_nodes, **seed_nodes, **source_nodes}
-
-        models_with_tests = soda_dbt.create_nodes_to_tests_mapping(
+        models_with_tests = self._create_nodes_to_tests_mapping(
             model_seed_and_source_nodes, test_nodes, parsed_run_results
         )
 
+        soda_checks = self._dbt_run_results_to_soda_checks(test_nodes, parsed_run_results)
+
         for unique_id, test_unique_ids in models_with_tests.items():
             node = model_seed_and_source_nodes[unique_id]
-            table = Dataset(
+            dataset = Dataset(
                 node.name if isinstance(node, ParsedSourceDefinition) else node.alias,
                 node.database,
                 node.schema,
             )
-            test_results = [tests_with_test_result[test_unique_id] for test_unique_id in test_unique_ids]
+            checks = []
 
-            yield table, test_results
+            for test_unique_id in test_unique_ids:
+                check: DbtCheck = soda_checks[test_unique_id]
+                check.dataset = dataset
+                checks.append(dataset)
 
-    def _map_dbt_run_result_to_test_result(
+            yield dataset, checks
+
+    def _dbt_run_results_to_soda_checks(
         self,
         test_nodes: dict[str, "DbtTestNode"] | None,
         run_results: list["RunResultOutput"],
-    ) -> dict[str, set["DbtModelNode"]]:
+    ) -> dict[str, list["Check"]]:
+        """Maps dbt run results to Soda Checks. Returns lists of Checks keyed by dbt run results."""
+
         from dbt.contracts.results import TestStatus
 
         assert (
             test_nodes is not None
         ), "No test nodes were retrieved from the manifest.json. This could be because no tests have been implemented in dbt yet or you never ran `dbt test`."
-        dbt_tests_with_soda_test = {
-            test_node.unique_id: Test(
-                id=test_node.unique_id,
-                title=f"{test_node.name}",
-                expression=test_node.raw_sql,
-                metrics=None,
-                column=test_node.column_name,
-                source="dbt",
-            )
-            for test_node in test_nodes.values()
-        }
 
-        tests_with_test_result = {
-            run_result.unique_id: TestResult(
-                dbt_tests_with_soda_test[run_result.unique_id],
-                passed=run_result.status == TestStatus.Pass,
-                skipped=run_result.status == TestStatus.Skipped,
-                values={"failures": run_result.failures},
-            )
-            for run_result in run_results
-            if run_result.unique_id in test_nodes.keys()
-        }
-        return tests_with_test_result
+        checks = {}
+        for run_result in run_results:
+            if run_result.unique_id in test_nodes.keys():
+                test_node = test_nodes[run_result.unique_id]
+                check = DbtCheck(
+                    check_cfg=DbtCheckCfg(name=test_node.name, file_path=test_node.original_file_path),
+                    identity=test_node.unique_id,
+                    expression=test_node.raw_code,
+                )
+                if run_result.status == TestStatus.Pass:
+                    check.outcome = CheckOutcome.PASS
+                elif run_result.status == TestStatus.Warn:
+                    check.outcome = CheckOutcome.WARN
+                else:
+                    check.outcome = CheckOutcome.FAIL
+                # check.add_outcome_reason(outcome_type="dbt", )
+                # values={"failures": run_result.failures}, - take this into diagnostics?
+
+                checks[run_result.unique_id] = check
+
+        return checks
 
     def _download_dbt_artifact_from_cloud(
         self,
@@ -342,23 +366,6 @@ class DbtCloud:
         test_nodes: dict[str, CompiledGenericTestNode | ParsedGenericTestNode] | None,
         run_results: list[RunResultOutput],
     ) -> dict[str, set[ParsedModelNode]]:
-        """
-        Map models to tests.
-
-        Parameters
-        ----------
-        model_nodes : Dict[str: ParsedModelNode]
-            The parsed model nodes.
-        test_nodes : Dict[str: CompiledGenericTestNode]
-            The compiled schema test nodes.
-        run_results : List[RunResultOutput]
-            The run results.
-
-        Returns
-        -------
-        out : Dict[str, set[ParseModelNode]]
-            A mapping from models to tests.
-        """
         assert (
             test_nodes is not None
         ), "No test nodes found in manifest.json. This could be because no test was implemented in dbt yet"
@@ -387,7 +394,7 @@ class DbtCloud:
 
         return models_with_tests
 
-    def _all_test_failures_are_not_none(run_results: list[RunResultOutput]) -> bool:
+    def _all_test_failures_are_not_none(self, run_results: list[RunResultOutput]) -> bool:
         results_with_null_failures = []
         for run_result in run_results:
             if run_result.failures is None:

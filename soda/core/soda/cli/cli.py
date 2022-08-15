@@ -24,6 +24,7 @@ from soda.scan import Scan
 
 from soda.telemetry.soda_telemetry import SodaTelemetry
 from soda.telemetry.soda_tracer import soda_trace, span_setup_function_args
+from pathlib import Path
 
 from ..__version__ import SODA_CORE_VERSION
 
@@ -317,6 +318,7 @@ def update_dro(
     required=True,
     type=click.Choice(["dbt"]),
 )
+@click.option("-d", "--data-source", envvar="SODA_DATA_SOURCE", required=True, multiple=False, type=click.STRING)
 @click.option(
     "-c",
     "--configuration",
@@ -331,25 +333,19 @@ def update_dro(
         "When provided, --dbt-manifest and --dbt-run-results are not required and will be ignored"
     ),
     default=None,
-    type=click.Path,
+    type=Path,
 )
 @click.option(
     "--dbt-manifest",
     help="The path to the dbt manifest file",
     default=None,
-    type=click.Path,
+    type=Path,
 )
 @click.option(
     "--dbt-run-results",
     help="The path to the dbt run results file",
     default=None,
-    type=click.Path,
-)
-@click.option(
-    "--dbt-cloud-account-id",
-    help="The id of your dbt cloud account",
-    default=None,
-    type=click.STRING,
+    type=Path,
 )
 @click.option(
     "--dbt-cloud-run-id",
@@ -367,7 +363,7 @@ def update_dro(
     type=click.STRING,
 )
 @soda_trace
-def ingest(tool: str, configuration: str, verbose: bool | None, **kwargs):
+def ingest(tool: str, data_source: str, configuration: str, verbose: bool | None, **kwargs):
     """
     Ingest test information from different tools.
     """
@@ -393,6 +389,7 @@ def ingest(tool: str, configuration: str, verbose: bool | None, **kwargs):
 
     scan = Scan()
     scan.set_scan_definition_name(f"Ingest - {tool}")
+    scan.set_data_source_name(data_source)
 
     if verbose:
         scan.set_verbose()
@@ -400,7 +397,10 @@ def ingest(tool: str, configuration: str, verbose: bool | None, **kwargs):
     if not fs.exists(configuration):
         scan._logs.error(f"Configuration path '{configuration}' does not exist")
     else:
-        scan.add_configuration_yaml_files(configuration)
+        scan.add_configuration_yaml_file(configuration)
+
+        if scan._data_source_name not in scan._data_source_manager.data_source_properties_by_name:
+            scan._logs.error(f"Provided data source '{data_source}' not present in configuration.")
 
     if not scan._configuration.soda_cloud:
         scan._logs.error("Soda Cloud configuration is required for Ingest command to work.")
@@ -409,19 +409,25 @@ def ingest(tool: str, configuration: str, verbose: bool | None, **kwargs):
 
     # TODO: Sloppy for now as we support only one tool. Make this command more generic, consider using visitor pattern or some
     # other way of generic implementation of multi tool support.
+    ingestor = None
+
     if tool == "dbt":
         try:
             from soda.cloud.dbt import DbtCloud
 
-            dbt = DbtCloud(
+            ingestor = DbtCloud(
                 scan,
                 **kwargs,
             )
-            return_value = dbt.ingest()
         except ModuleNotFoundError:
-            scan._logs.error("Unable to import dbt module. Have you installed `pip install soda-core-dbt`?")
+            scan._logs.error("Unable to import dbt module. Did you install `pip install soda-core-dbt`?")
     else:
         scan._logs.error(f"Unknown tool: {tool}")
+
+    if ingestor and not scan.has_error_logs():
+        return_value = ingestor.ingest()
+    else:
+        scan._logs.info("Unable to proceed with ingest.")
 
     sys.exit(return_value)
 
