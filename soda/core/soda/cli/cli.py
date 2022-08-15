@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
 import click
@@ -62,6 +63,14 @@ if __name__ == "__main__":
     multiple=True,
     type=click.STRING,
 )
+@click.option(
+    "-t",
+    "--data-timestamp",
+    required=False,
+    default=datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+    help="The scan time in ISO8601 format like eg 2021-04-28T09:00:00+02:00",
+    type=click.STRING,
+)
 @click.option("-V", "--verbose", is_flag=True)
 @click.argument("sodacl_paths", nargs=-1, type=click.STRING)
 @soda_trace
@@ -70,6 +79,7 @@ def scan(
     data_source: str,
     scan_definition: Optional[str],
     configuration: List[str],
+    data_timestamp: str,
     variable: List[str],
     verbose: Optional[bool],
 ):
@@ -99,6 +109,8 @@ def scan(
     is "Soda Core CLI", which is usually sufficient when testing the CLI and Soda Cloud connection.
 
     option -V --verbose activates more verbose logging, including the queries that are executed.
+
+    option -t --data-timestamp set the scan data timestamp, can be used to 'backfill' the data for a previous date
 
     [SODACL_PATHS] is a list of file paths that can be either a SodaCL file or a directory.
     Directories are scanned recursive and will add all files ending with .yml
@@ -131,6 +143,7 @@ def scan(
     )
 
     scan = Scan()
+    scan._data_timestamp = datetime.fromisoformat(data_timestamp)
 
     if verbose:
         scan.set_verbose()
