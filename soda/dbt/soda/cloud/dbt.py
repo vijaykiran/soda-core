@@ -1,37 +1,34 @@
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from functools import reduce
 from operator import or_
 from pathlib import Path
-from typing import Any, Optional
-from unicodedata import name
+from typing import Any, Iterator, Optional
 
+import requests
 from dbt.contracts.graph.compiled import (
-    CompiledModelNode,
     CompiledGenericTestNode,
+    CompiledModelNode,
     CompiledSeedNode,
 )
 from dbt.contracts.graph.parsed import (
-    ParsedModelNode,
     ParsedGenericTestNode,
+    ParsedModelNode,
     ParsedSeedNode,
     ParsedSourceDefinition,
 )
 from dbt.contracts.results import RunResultOutput
 from dbt.node_types import NodeType
+from requests.structures import CaseInsensitiveDict
 from soda.cloud.dbt_config import DbtCloudConfig
 from soda.execution.check.check import Check
+from soda.execution.check.dbt_check import DbtCheck
 from soda.execution.check_outcome import CheckOutcome
+from soda.model.dataset import Dataset
 from soda.scan import Scan
 from soda.soda_cloud.soda_cloud import SodaCloud
-import json
-from typing import Iterator
-from soda.model.dataset import Dataset
-from requests.structures import CaseInsensitiveDict
-import requests
-
-from soda.execution.check.dbt_check import DbtCheck
 from soda.sodacl.dbt_check_cfg import DbtCheckCfg
 
 
@@ -158,8 +155,8 @@ class DbtCloud:
         self,
         api_token: str,
         account_id: str,
-        run_id: Optional[str],
-        job_id: Optional[str],
+        run_id: str | None,
+        job_id: str | None,
     ) -> tuple[dict, dict]:
         manifest = self._download_dbt_artifact_from_cloud("manifest.json", api_token, account_id, run_id, job_id)
         run_results = self._download_dbt_artifact_from_cloud("run_results.json", api_token, account_id, run_id, job_id)
@@ -197,9 +194,9 @@ class DbtCloud:
 
     def _dbt_run_results_to_soda_checks(
         self,
-        test_nodes: dict[str, "DbtTestNode"] | None,
-        run_results: list["RunResultOutput"],
-    ) -> dict[str, list["Check"]]:
+        test_nodes: dict[str, DbtTestNode] | None,
+        run_results: list[RunResultOutput],
+    ) -> dict[str, list[Check]]:
         """Maps dbt run results to Soda Checks. Returns lists of Checks keyed by dbt run results."""
 
         from dbt.contracts.results import TestStatus
@@ -235,8 +232,8 @@ class DbtCloud:
         artifact: str,
         api_token: str,
         account_id: str,
-        run_id: Optional[str],
-        job_id: Optional[str],
+        run_id: str | None,
+        job_id: str | None,
     ) -> dict:
         """
         Download an artifact from the dbt cloud by run_id. If a job_id is provided instead of
@@ -272,7 +269,7 @@ class DbtCloud:
 
         return response.json()
 
-    def _get_latest_run_id(self, api_token: str, account_id: str, job_id: str) -> Optional[str]:
+    def _get_latest_run_id(self, api_token: str, account_id: str, job_id: str) -> str | None:
         url = f"{self.ADMIN_API_BASE_URL}{account_id}/runs"
 
         headers = CaseInsensitiveDict()
@@ -336,7 +333,7 @@ class DbtCloud:
             test_nodes = None
 
         if manifest.get("sources") is not None:
-            source_nodes: Optional[dict] = {
+            source_nodes: dict | None = {
                 source_name: ParsedSourceDefinition(**source)
                 for source_name, source in manifest["sources"].items()
                 if source["resource_type"] == NodeType.Source

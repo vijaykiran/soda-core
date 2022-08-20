@@ -3,10 +3,10 @@ from __future__ import annotations
 import logging
 import re
 
+from soda.cloud.dbt_config import DbtCloudConfig
 from soda.common.logs import Logs
 from soda.common.parser import Parser
 from soda.configuration.configuration import Configuration
-from soda.cloud.dbt_config import DbtCloudConfig
 from soda.sampler.soda_cloud_sampler import SodaCloudSampler
 from soda.soda_cloud.soda_cloud import SodaCloud
 

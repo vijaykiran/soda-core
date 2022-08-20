@@ -13,19 +13,17 @@ from __future__ import annotations
 import logging
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 import click
 from ruamel.yaml import YAML
 from ruamel.yaml.main import round_trip_dump
-
 from soda.common.file_system import file_system
 from soda.common.logs import configure_logging
 from soda.scan import Scan
-
 from soda.telemetry.soda_telemetry import SodaTelemetry
 from soda.telemetry.soda_tracer import soda_trace, span_setup_function_args
-from pathlib import Path
 
 from ..__version__ import SODA_CORE_VERSION
 
@@ -75,13 +73,13 @@ if __name__ == "__main__":
 @click.argument("sodacl_paths", nargs=-1, type=click.STRING)
 @soda_trace
 def scan(
-    sodacl_paths: List[str],
+    sodacl_paths: list[str],
     data_source: str,
-    scan_definition: Optional[str],
-    configuration: List[str],
+    scan_definition: str | None,
+    configuration: list[str],
     data_timestamp: str,
-    variable: List[str],
-    verbose: Optional[bool],
+    variable: list[str],
+    verbose: bool | None,
 ):
     """
     soda scan will
@@ -204,8 +202,8 @@ def update_dro(
     distribution_reference_file: str,
     data_source: str,
     configuration: str,
-    name: Optional[str],
-    verbose: Optional[bool],
+    name: str | None,
+    verbose: bool | None,
 ):
     """
     soda update-dro will
@@ -445,7 +443,7 @@ def ingest(tool: str, data_source: str, configuration: str, verbose: bool | None
     sys.exit(return_value)
 
 
-def __execute_query(connection, sql: str) -> List[Tuple]:
+def __execute_query(connection, sql: str) -> list[tuple]:
     try:
         cursor = connection.cursor()
         try:
