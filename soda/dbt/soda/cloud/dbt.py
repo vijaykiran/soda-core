@@ -5,7 +5,7 @@ from collections import defaultdict
 from functools import reduce
 from operator import or_
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator
 
 import requests
 from dbt.contracts.graph.compiled import (
